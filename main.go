@@ -1,70 +1,119 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Todo struct {
-	ID        int    `json:"id"`
-	Completed bool   `json:"completed"`
-	Body      string `json:"body"`
+	ID        primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"` // MongoDB uses bson to store data
+	Completed bool               `json:"completed"`
+	Body      string             `json:"body"`
 }
+
+var collection *mongo.Collection
 
 func main() {
-	fmt.Println("HELLO WORLD") // console.log
-	app := fiber.New()         // new server
-	todos := []Todo{}          // INTIALIZE data storage (array) of Todo nodes
+	fmt.Println("Hello, World!")
 
-	app.Get("/api/todos", func(c *fiber.Ctx) error { // GET todo
-		return c.Status(200).JSON(todos)
-	})
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatal("Error loading .env file", err)
+	}
 
-	app.Post("api/todos", func(c *fiber.Ctx) error { // CREATE todo
-		todo := &Todo{}
+	MONGODB_URI := os.Getenv("MONGODB_URI")
+	clientOptions := options.Client().ApplyURI(MONGODB_URI)
+	client, err := mongo.Connect(context.Background(), clientOptions)
 
-		if error := c.BodyParser(todo); error != nil {
-			return error
-		}
+	if err != nil {
+		log.Fatal(err)
+	}
 
-		if todo.Body == "" {
-			return c.Status(400).JSON(fiber.Map{"error": "Todo body is required"})
-		}
+	defer client.Disconnect(context.Background())
 
-		todo.ID = len(todos) + 1 // INCRREMENT TODO ID BY 1
-		todos = append(todos, *todo)
+	err = client.Ping(context.Background(), nil)
 
-		return c.Status(201).JSON(todo)
-	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// UPDATE/Patch
-	app.Patch("api/todos/:id", func(c *fiber.Ctx) error {
-		id := c.Params("id")
+	fmt.Println("Connected to MongoDB Atlas!")
 
-		for i, todo := range todos {
-			if fmt.Sprint(todo.ID) == id {
-				todos[i].Completed = true
-				return c.Status(200).JSON(fiber.Map{"error": "Todo not found"})
-			}
-		}
-		return c.Status(404).JSON(fiber.Map{"error": "TODO NOT FOUND"})
-	})
+	collection = client.Database("golang_db").Collection("todos")
 
-	// DELETE A TODO
-	app.Delete("api/todos/:id", func(c *fiber.Ctx) error {
-		id := c.Params("id")
+	app := fiber.New()
 
-		for i, todo := range todos {
-			if fmt.Sprint(todo.ID) == id {
-				todos = append(todos[:i], todos[i+1:]...)
-				return c.Status(200).JSON(fiber.Map{"success": "delete deleted"})
-			}
-		}
+	app.Get("/api/todos", getTodos)
+	app.Post("/api/todos", createTodo)
+	// app.Patch("/api/todos/:id", updateTodo)
+	// app.Delete("/api/todos/:id", deleteTodo)
 
-		return c.Status(404).JSON(fiber.Map{"error": "todo not fooound to delete"})
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5000"
+	}
 
-	})
-	log.Fatal(app.Listen(":4000")) // error conosole
+	log.Fatal(app.Listen("0.0.0.0:" + port))
 }
+
+func getTodos(c *fiber.Ctx) error {
+	var todos []Todo
+
+	cursor, err := collection.Find(context.Background(), bson.M{})
+	// return c.SendString("Get Todo")
+
+	if err != nil {
+		return err
+	}
+
+	defer cursor.Close(context.Background()) // defer is like async/await. It ruuns the surounding/parent function first before running the deferred function.
+
+	for cursor.Next(context.Background()) {
+		var todo Todo
+		if err := cursor.Decode(&todo); err != nil {
+			return err
+		}
+		todos = append(todos, todo)
+	}
+	return c.JSON(todos)
+}
+
+func createTodo(c *fiber.Ctx) error {
+	todo := new(Todo)
+
+	if err := c.BodyParser(todo); err != nil {
+		return err
+	}
+
+	if todo.Body == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Body is required",
+		})
+	}
+
+	insertResult, err := collection.InsertOne(context.Background(), todo)
+	if err != nil {
+		return err
+	}
+
+	todo.ID = insertResult.InsertedID.(primitive.ObjectID)
+	return c.Status(201).JSON(todo)
+	// return c.SendString("post Todo")
+}
+
+// func updateTodo(c *fiber.Ctx) error {
+// 	return c.SendString("update Todo")
+// }
+
+// func deleteTodo(c *fiber.Ctx) error {
+// 	return c.SendString("delete Todo")
+// }
